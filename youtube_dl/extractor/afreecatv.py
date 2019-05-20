@@ -12,6 +12,7 @@ from ..utils import (
     url_or_none,
     urlencode_postdata,
     xpath_text,
+    unescapeHTML,
 )
 
 
@@ -26,7 +27,9 @@ class AfreecaTVIE(InfoExtractor):
                                 /app/(?:index|read_ucc_bbs)\.cgi|
                                 /player/[Pp]layer\.(?:swf|html)
                             )\?.*?\bnTitleNo=|
-                            vod\.afreecatv\.com/PLAYER/STATION/
+                            vod\.afreecatv\.com/PLAYER/STATION/|
+                            play.afreecatv.com/\w+/
+                            |
                         )
                         (?P<id>\d+)
                     '''
@@ -228,6 +231,86 @@ class AfreecaTVIE(InfoExtractor):
         if re.search(r'alert\(["\']This video has been deleted', webpage):
             raise ExtractorError(
                 'Video %s has been deleted' % video_id, expected=True)
+
+        if "play.afreecatv.com" in webpage:
+          bid = self._search_regex(r'"szBjId" value="([^"]+)"', webpage, "bid")
+          broadcast_title = self._search_regex(r'"broadcast_title">([^<]+)<', webpage, "broadcast_title")
+
+          query = {
+            "bid": bid,
+            "bno": video_id,
+            "pwd": "",
+            "type": "",
+            "player_type": "html5",
+            "stream_type": "common",
+            "quality": "",
+            "mode": "landing",
+          }
+
+          json = self._download_json(
+            "http://live.afreecatv.com/afreeca/player_live_api.php", video_id,
+            data = urlencode_postdata(query), headers = {
+              'Referer': url,
+              'Accept': 'application/json',
+              'Origin': 'http://play.afreecatv.com',
+              'Content-Type': 'application/x-www-form-urlencoded',
+            })
+
+          pbno = json["CHANNEL"]["PBNO"]
+          rmd = json["CHANNEL"]["RMD"] # "http://resourcemanager-west.afreecatv.com:9090"
+
+          if pbno == "0":
+            pbno = video_id
+
+          json = self._download_json(
+            rmd + "/broad_stream_assign.html", video_id,
+            query = {
+              "return_type": "aws_cf",
+              "use_cors": "true",
+              "cors_origin_url": "play.afreecatv.com",
+              "broad_key": video_id + "-common-original-hls",
+              "time": "0",
+            }, headers = {
+              'Referer': url,
+              'Accept': 'application/json',
+              'Origin': 'http://play.afreecatv.com',
+            })
+
+          view_url = json["view_url"] # "http://live-hls-local-cf.afreecatv.com/livestream-west-04/auth_playlist.m3u8
+
+          query = {
+            "bid": bid,
+            "bno": video_id,
+            "pwd": "",
+            "type": "pwd",
+            "player_type": "html5",
+            "stream_type": "common",
+            "quality": "original",
+            "mode": "landing",
+          }
+
+          json = self._download_json(
+            "http://live.afreecatv.com/afreeca/player_live_api.php", video_id,
+            data = urlencode_postdata(query), headers = {
+              'Referer': url,
+              'Accept': 'application/json',
+              'Origin': 'http://play.afreecatv.com',
+              'Content-Type': 'application/x-www-form-urlencoded',
+            })
+
+          AID = json["CHANNEL"]["AID"]
+
+          info = {
+            'id': video_id,
+            'title': unescapeHTML(broadcast_title),
+            'uploader': bid,
+            'is_live': True,
+            'formats': self._extract_m3u8_formats(
+              view_url + "?aid=" + AID, video_id, 'mp4',
+              m3u8_id='hls', live=True)
+          }
+
+          return info
 
         station_id = self._search_regex(
             r'nStationNo\s*=\s*(\d+)', webpage, 'station')
